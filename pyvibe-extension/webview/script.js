@@ -1,242 +1,49 @@
 (function () {
     const vscode = acquireVsCodeApi();
+    const messagesContainer = document.getElementById('messages');
+    const messageInput = document.getElementById('messageInput');
+    const sendButton = document.getElementById('sendButton');
+    const newChatBtn = document.getElementById('newChatBtn');
+    const threadIdSpan = document.getElementById('threadId');
 
-    let messagesContainer = document.getElementById('messages');
-    let messageInput = document.getElementById('messageInput');
-    let sendButton = document.getElementById('sendButton');
+    let currentThreadId = '';
 
-    function clearMessages() {
-        messagesContainer.innerHTML = '';
-    }
+    // Icons
+    const ICONS = {
+        WORK: `<svg class="spin" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v4m0 12v4M4.93 4.93l2.83 2.83m8.48 8.48l2.83 2.83M2 12h4m12 0h4M4.93 19.07l2.83-2.83m8.48-8.48l2.83-2.83"/></svg>`,
+        CHECK: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>`,
+        TERMINAL: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg>`
+    };
 
-    function addWelcomeMessage() {
-        addMessage({
-            type: 'assistant',
-            text: '👋 Hello! I\'m PyPilot Assistant, your Python coding companion. I can help you with:\n\n• Code debugging and explanations\n• Writing Python functions and classes\n• Best practices and optimization\n• Understanding Python concepts\n• And much more!\n\nWhat would you like help with today?',
-            timestamp: new Date().toISOString()
-        });
-    }
-
-    // Initialize with welcome message
-    addWelcomeMessage();
-
-    // Add event listener for new chat button
-    document.getElementById('newChatBtn').addEventListener('click', () => {
-        vscode.postMessage({
-            command: 'newChat'
-        });
-    });
-
-    // Request current thread ID
-    vscode.postMessage({
-        command: 'getThreadId'
-    });
-
-    // Event listeners
-    sendButton.addEventListener('click', sendMessage);
-    messageInput.addEventListener('keydown', handleKeyDown);
-
-    function handleKeyDown(event) {
-        if (event.key === 'Enter' && !event.shiftKey) {
-            event.preventDefault();
-            sendMessage();
-        }
-    }
-
-    function sendMessage() {
-        const text = messageInput.value.trim();
-        if (!text) return;
-
-        // Send message to extension
-        vscode.postMessage({
-            command: 'sendMessage',
-            text: text
-        });
-
-        // Clear input
-        messageInput.value = '';
-        messageInput.style.height = 'auto';
-
-        // Disable send button temporarily
-        sendButton.disabled = true;
-        showTypingIndicator();
-    }
-
-    function addMessage(message) {
-        const messageDiv = document.createElement('div');
-        messageDiv.className = `message ${message.type}`;
-
-        const contentDiv = document.createElement('div');
-        contentDiv.className = 'message-content';
-        contentDiv.innerHTML = formatMessageText(message.text);
-
-        const timeDiv = document.createElement('div');
-        timeDiv.className = 'message-time';
-        timeDiv.textContent = formatTime(message.timestamp);
-
-        messageDiv.appendChild(contentDiv);
-        messageDiv.appendChild(timeDiv);
-
-        messagesContainer.appendChild(messageDiv);
-        scrollToBottom();
-    }
-
-    function formatMessageText(text) {
-        // Format code blocks with language detection
-        let formatted = text;
-
-        // Replace diff blocks with styled diff visualization
-        formatted = formatted.replace(/```diff\n([\s\S]*?)```/g, (match, diffContent) => {
-            const diffId = 'diff-' + Math.random().toString(36).substr(2, 9);
-            const diffLines = parseDiffContent(diffContent);
-
-            let diffHtml = '';
-            diffLines.forEach(line => {
-                const className = line.type;
-                diffHtml += `<div class="diff-line ${className}">${escapeHtml(line.content)}</div>`;
-            });
-
-            return `
-                <div class="diff-block">
-                    <div class="diff-header">
-                        <span>Diff</span>
-                        <button class="copy-btn" onclick="copyDiff('${diffId}')">Copy</button>
-                    </div>
-                    <div id="${diffId}">${diffHtml}</div>
-                </div>
-            `;
-        });
-
-        // Replace ```language\ncode\n``` with styled code blocks
-        formatted = formatted.replace(/```(\w+)?\n([\s\S]*?)```/g, (match, lang, code) => {
-            const language = lang || 'text';
-            const codeId = 'code-' + Math.random().toString(36).substr(2, 9);
-
-            return `
-                <div class="code-block">
-                    <div class="code-header">
-                        <span class="code-language">${language}</span>
-                        <button class="copy-btn" onclick="copyCode('${codeId}')">Copy</button>
-                    </div>
-                    <pre><code id="${codeId}" class="language-${language}">${escapeHtml(code.trim())}</code></pre>
-                </div>
-            `;
-        });
-
-        // Replace inline `code` with styled inline code
-        formatted = formatted.replace(/`([^`]+)`/g, '<code>$1</code>');
-
-        // Convert newlines to <br>
-        formatted = formatted.replace(/\n/g, '<br>');
-
-        return formatted;
-    }
-
-    function parseDiffContent(diffContent) {
-        const lines = diffContent.split('\n');
-        const parsedLines = [];
-
-        lines.forEach(line => {
-            if (line.startsWith('+') && !line.startsWith('+++')) {
-                parsedLines.push({ type: 'added', content: line });
-            } else if (line.startsWith('-') && !line.startsWith('---')) {
-                parsedLines.push({ type: 'removed', content: line });
-            } else if (line.startsWith(' ')) {
-                parsedLines.push({ type: 'unchanged', content: line });
-            } else if (line.startsWith('@@') || line.startsWith('---') || line.startsWith('+++')) {
-                parsedLines.push({ type: 'context', content: line });
-            } else {
-                parsedLines.push({ type: 'context', content: line });
-            }
-        });
-
-        return parsedLines;
-    }
-
-    function copyDiff(diffId) {
-        const diffElement = document.getElementById(diffId);
-        if (diffElement) {
-            const diffText = Array.from(diffElement.querySelectorAll('.diff-line'))
-                .map(line => line.textContent)
-                .join('\n');
-
-            navigator.clipboard.writeText(diffText).then(() => {
-                // Show feedback
-                const button = diffElement.previousElementSibling.querySelector('.copy-btn');
-                const originalText = button.textContent;
-                button.textContent = 'Copied!';
-                setTimeout(() => {
-                    button.textContent = originalText;
-                }, 2000);
-            });
-        }
-    }
-
-    function escapeHtml(text) {
-        const div = document.createElement('div');
-        div.textContent = text;
-        return div.innerHTML;
-    }
-
-    function copyCode(codeId) {
-        const codeElement = document.getElementById(codeId);
-        if (codeElement) {
-            navigator.clipboard.writeText(codeElement.textContent).then(() => {
-                // Show feedback
-                const button = codeElement.parentElement.previousElementSibling.querySelector('.copy-btn');
-                const originalText = button.textContent;
-                button.textContent = 'Copied!';
-                setTimeout(() => {
-                    button.textContent = originalText;
-                }, 2000);
-            });
-        }
-    }
-
-    function showTypingIndicator() {
-        const typingDiv = document.createElement('div');
-        typingDiv.className = 'typing-indicator active';
-        typingDiv.id = 'typingIndicator';
-
-        for (let i = 0; i < 3; i++) {
-            const dot = document.createElement('div');
-            dot.className = 'typing-dot';
-            typingDiv.appendChild(dot);
-        }
-
-        messagesContainer.appendChild(typingDiv);
-        scrollToBottom();
-    }
-
-    function hideTypingIndicator() {
-        const typingIndicator = document.getElementById('typingIndicator');
-        if (typingIndicator) {
-            typingIndicator.remove();
-        }
-    }
-
-    function scrollToBottom() {
-        messagesContainer.scrollTop = messagesContainer.scrollHeight;
-    }
-
-    function formatTime(timestamp) {
-        const date = new Date(timestamp);
-        return date.toLocaleTimeString('en-US', {
-            hour: '2-digit',
-            minute: '2-digit'
-        });
-    }
-
-    // Handle messages from extension
+    // Handle messages from the extension
     window.addEventListener('message', event => {
         const message = event.data;
-
         switch (message.command) {
             case 'addMessage':
-                hideTypingIndicator();
-                addMessage(message.message);
-                sendButton.disabled = false;
-                messageInput.focus();
+                appendMessage(message.message);
+                break;
+            case 'threadId':
+                currentThreadId = message.threadId;
+                threadIdSpan.textContent = currentThreadId;
+                break;
+            case 'newChat':
+                currentThreadId = message.threadId;
+                threadIdSpan.textContent = currentThreadId;
+                messagesContainer.innerHTML = `
+                    <div class="welcome-message">
+                        <h1>Ready to code?</h1>
+                        <p>Ask me to explain code, write functions, or fix bugs in your Python project.</p>
+                    </div>`;
+                break;
+            case 'updateStatus':
+                if (threadIdSpan) {
+                    threadIdSpan.textContent = message.status;
+                    if (message.done) {
+                        setTimeout(() => {
+                            threadIdSpan.textContent = currentThreadId || 'Ready';
+                        }, 2000);
+                    }
+                }
                 break;
             case 'showTypingIndicator':
                 showTypingIndicator();
@@ -244,38 +51,156 @@
             case 'hideTypingIndicator':
                 hideTypingIndicator();
                 break;
-            case 'newChat':
-                clearMessages();
-                addWelcomeMessage();
-                // Show visual feedback for new chat
-                const threadEl = document.getElementById('threadId');
-                if (threadEl) {
-                    threadEl.style.opacity = '0.5';
-                    setTimeout(() => {
-                        threadEl.style.opacity = '1';
-                    }, 300);
-                }
-                break;
-            case 'threadId':
-                // Display thread ID in the UI
-                const threadIdEl = document.getElementById('threadId');
-                if (threadIdEl) {
-                    // Show short version of thread ID
-                    const shortId = message.threadId.replace('thread_', '').substring(0, 12);
-                    threadIdEl.textContent = shortId + '...';
-                    threadIdEl.title = message.threadId; // Full ID on hover
-                }
-                console.log('Current thread ID:', message.threadId);
-                break;
+        }
+    });
+
+    // Send message on button click
+    sendButton.addEventListener('click', () => {
+        sendMessage();
+    });
+
+    // Send message on Enter (but allow Shift+Enter for new lines)
+    messageInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            sendMessage();
         }
     });
 
     // Auto-resize textarea
-    messageInput.addEventListener('input', function () {
-        this.style.height = 'auto';
-        this.style.height = Math.min(this.scrollHeight, 120) + 'px';
+    messageInput.addEventListener('input', () => {
+        messageInput.style.height = 'auto';
+        messageInput.style.height = (messageInput.scrollHeight) + 'px';
+        sendButton.disabled = !messageInput.value.trim();
     });
 
-    // Focus on input
-    messageInput.focus();
+    newChatBtn.addEventListener('click', () => {
+        vscode.postMessage({ command: 'newChat' });
+    });
+
+    function sendMessage() {
+        const text = messageInput.value.trim();
+        if (text) {
+            vscode.postMessage({
+                command: 'sendMessage',
+                text: text
+            });
+            messageInput.value = '';
+            messageInput.style.height = 'auto';
+            sendButton.disabled = true;
+        }
+    }
+
+    function appendMessage(msg) {
+        hideTypingIndicator();
+
+        if (msg.type === 'system') {
+            appendStep(msg.text);
+            return;
+        }
+
+        const messageDiv = document.createElement('div');
+        messageDiv.className = `message ${msg.type}-message`;
+
+        const header = document.createElement('div');
+        header.className = 'message-header';
+
+        const label = document.createElement('span');
+        label.className = 'message-label';
+        label.textContent = msg.type === 'user' ? 'YOU' : 'PYPILOT';
+        header.appendChild(label);
+
+        const bubble = document.createElement('div');
+        bubble.className = 'message-bubble';
+
+        const content = document.createElement('div');
+        content.className = 'message-content';
+        content.innerHTML = formatMessage(msg.text);
+
+        bubble.appendChild(content);
+        messageDiv.appendChild(header);
+        messageDiv.appendChild(bubble);
+        messagesContainer.appendChild(messageDiv);
+
+        scrollToBottom();
+    }
+
+    function appendStep(text) {
+        // Check if there's a previous "system" step that is incomplete
+        const steps = messagesContainer.querySelectorAll('.step-container');
+        const lastStep = steps[steps.length - 1];
+
+        if (lastStep && lastStep.dataset.status === 'working') {
+            // Update the last step to completed
+            const iconSpan = lastStep.querySelector('.step-icon');
+            if (iconSpan) iconSpan.innerHTML = ICONS.CHECK;
+            lastStep.dataset.status = 'complete';
+        }
+
+        const stepDiv = document.createElement('div');
+        stepDiv.className = 'step-container pulse-step';
+        stepDiv.dataset.status = 'working';
+
+        const header = document.createElement('div');
+        header.className = 'step-header';
+
+        const icon = document.createElement('span');
+        icon.className = 'step-icon';
+        icon.innerHTML = ICONS.WORK;
+
+        const statusText = document.createElement('span');
+        statusText.className = 'step-status';
+        statusText.textContent = text;
+
+        header.appendChild(icon);
+        header.appendChild(statusText);
+        stepDiv.appendChild(header);
+        messagesContainer.appendChild(stepDiv);
+
+        scrollToBottom();
+
+        // Mark as completed after a short delay (simulating step finish)
+        // In a real turn, the extension should probably signal completion
+        // but for now we'll mark previous as complete when a new one comes or Turn ends.
+    }
+
+    function formatMessage(text) {
+        if (!text) return '';
+        let formatted = text
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/```([\s\S]+?)```/g, '<pre><code>$1</code></pre>')
+            .replace(/`([^`]+)`/g, '<code>$1</code>')
+            .replace(/\n/g, '<br>');
+        return formatted;
+    }
+
+    function showTypingIndicator() {
+        if (document.querySelector('.typing-indicator')) return;
+        const indicator = document.createElement('div');
+        indicator.className = 'typing-indicator';
+        indicator.innerHTML = '<div class="dot"></div><div class="dot"></div><div class="dot"></div>';
+        messagesContainer.appendChild(indicator);
+        scrollToBottom();
+    }
+
+    function hideTypingIndicator() {
+        // Also mark the final step as complete when turn ends
+        const steps = messagesContainer.querySelectorAll('.step-container');
+        const lastStep = steps[steps.length - 1];
+        if (lastStep && lastStep.dataset.status === 'working') {
+            const iconSpan = lastStep.querySelector('.step-icon');
+            if (iconSpan) iconSpan.innerHTML = ICONS.CHECK;
+            lastStep.dataset.status = 'complete';
+        }
+
+        const indicator = document.querySelector('.typing-indicator');
+        if (indicator) indicator.remove();
+    }
+
+    function scrollToBottom() {
+        const chatArea = document.getElementById('chat-area');
+        chatArea.scrollTop = chatArea.scrollHeight;
+    }
 })();

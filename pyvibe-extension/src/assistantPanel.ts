@@ -5,9 +5,11 @@ interface ApiResponse {
     response: string;
     thread_id: string;
     tool_calls?: ToolCall[];
-    metadata?: any;
 }
 
+/**
+ * Manages the PyPilot Assistant webview panel.
+ */
 export class AssistantPanel {
     public static currentPanel: AssistantPanel | undefined;
     private readonly _panel: vscode.WebviewPanel;
@@ -16,9 +18,7 @@ export class AssistantPanel {
     private toolExecutor: ToolExecutor;
 
     public static createOrShow(extensionUri: vscode.Uri) {
-        const column = vscode.window.activeTextEditor
-            ? vscode.window.activeTextEditor.viewColumn
-            : undefined;
+        const column = vscode.window.activeTextEditor?.viewColumn;
 
         if (AssistantPanel.currentPanel) {
             AssistantPanel.currentPanel._panel.reveal(column);
@@ -52,16 +52,13 @@ export class AssistantPanel {
                 switch (message.command) {
                     case 'sendMessage':
                         this.handleUserMessage(message.text);
-                        return;
+                        break;
                     case 'newChat':
                         this.startNewChat();
-                        return;
+                        break;
                     case 'getThreadId':
-                        this._panel.webview.postMessage({
-                            command: 'threadId',
-                            threadId: this.currentThreadId
-                        });
-                        return;
+                        this._postToWebview('threadId', { threadId: this.currentThreadId });
+                        break;
                 }
             },
             null,
@@ -70,30 +67,22 @@ export class AssistantPanel {
 
         // Send initial thread ID to webview
         setTimeout(() => {
-            this._panel.webview.postMessage({
-                command: 'threadId',
-                threadId: this.currentThreadId
-            });
+            this._postToWebview('threadId', { threadId: this.currentThreadId });
         }, 100);
     }
 
     private generateThreadId(): string {
-        return 'thread_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+        return `thread_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     }
 
     private startNewChat() {
         this.currentThreadId = this.generateThreadId();
-        this._panel.webview.postMessage({
-            command: 'newChat',
-            threadId: this.currentThreadId
-        });
+        this._postToWebview('newChat', { threadId: this.currentThreadId });
     }
 
     private async handleUserMessage(text: string, toolResults?: ToolResult[]) {
-        // Only add user message if this is a new message (not a tool result continuation)
         if (!toolResults) {
-            this._panel.webview.postMessage({
-                command: 'addMessage',
+            this._postToWebview('addMessage', {
                 message: {
                     type: 'user',
                     text: text,
@@ -102,74 +91,24 @@ export class AssistantPanel {
             });
         }
 
-        // Show typing indicator
-        this._panel.webview.postMessage({
-            command: 'showTypingIndicator'
-        });
+        this._postToWebview('showTypingIndicator');
 
         try {
-            // Call the API endpoint
-            const requestBody: any = {
-                message: text,
-                thread_id: this.currentThreadId
-            };
-
-            // Include tool results if this is a continuation
-            if (toolResults) {
-                requestBody.tool_results = toolResults;
-            }
+            const requestBody: any = { message: text, thread_id: this.currentThreadId };
+            if (toolResults) requestBody.tool_results = toolResults;
 
             const response = await fetch('http://localhost:8000/chat', {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
+                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(requestBody)
             });
 
-            if (!response.ok) {
-                throw new Error(`HTTP error! status: ${response.status}`);
-            }
-
+            if (!response.ok) throw new Error(`Server returned ${response.status}`);
             const data = await response.json() as ApiResponse;
 
-            // Check if there are tool calls to execute
-            if (data.tool_calls && data.tool_calls.length > 0) {
-                // Show a status message
-                this._panel.webview.postMessage({
-                    command: 'addMessage',
-                    message: {
-                        type: 'system',
-                        text: `🔧 Executing ${data.tool_calls.length} action(s)...`,
-                        timestamp: new Date().toISOString()
-                    }
-                });
-
-                // Execute the tool calls
-                const toolResults = await this.toolExecutor.executeToolCalls(data.tool_calls);
-
-                // Display tool execution results
-                const successCount = toolResults.filter(r => r.success).length;
-                const statusText = `✅ Completed ${successCount}/${toolResults.length} action(s)`;
-
-                this._panel.webview.postMessage({
-                    command: 'addMessage',
-                    message: {
-                        type: 'system',
-                        text: statusText,
-                        timestamp: new Date().toISOString()
-                    }
-                });
-
-                // Continue the conversation with tool results
-                await this.handleUserMessage(text, toolResults);
-                return;
-            }
-
-            // Add assistant response to chat (only if no tool calls)
+            // 1. Show Reasoning/Thought if present
             if (data.response) {
-                this._panel.webview.postMessage({
-                    command: 'addMessage',
+                this._postToWebview('addMessage', {
                     message: {
                         type: 'assistant',
                         text: data.response,
@@ -178,24 +117,63 @@ export class AssistantPanel {
                 });
             }
 
-        } catch (error) {
-            console.error('Error calling API:', error);
+            // 2. Handle Tool Calls
+            if (data.tool_calls && data.tool_calls.length > 0) {
+                let currentResults: ToolResult[] = [];
+                for (const toolCall of data.tool_calls) {
+                    let status = 'Working...';
+                    let stepText = `Executing ${toolCall.function.name}...`;
 
-            // Add error message to chat
-            this._panel.webview.postMessage({
-                command: 'addMessage',
+                    try {
+                        const args = JSON.parse(toolCall.function.arguments);
+                        if (toolCall.function.name === 'read_file') {
+                            status = 'Reading...';
+                            stepText = `Reading ${args.file_path}`;
+                        } else if (toolCall.function.name === 'write_file') {
+                            status = 'Writing...';
+                            stepText = `Writing ${args.file_path}`;
+                        } else if (toolCall.function.name === 'edit_file') {
+                            status = 'Editing...';
+                            stepText = `Editing ${args.file_path}`;
+                        } else if (toolCall.function.name === 'search_files') {
+                            status = 'Searching...';
+                            stepText = `Searching for ${args.pattern || args.query}`;
+                        }
+                    } catch (e) { }
+
+                    this._postToWebview('updateStatus', { status: status, done: false });
+                    this._postToWebview('addMessage', {
+                        message: {
+                            type: 'system',
+                            text: stepText,
+                            timestamp: new Date().toISOString()
+                        }
+                    });
+
+                    const results = await this.toolExecutor.executeToolCalls([toolCall]);
+                    currentResults = [...currentResults, ...results];
+                }
+
+                this._postToWebview('updateStatus', { status: 'Complete', done: true });
+                // Recursively handle the next step in the turn
+                await this.handleUserMessage(text, currentResults);
+                return;
+            }
+        } catch (error) {
+            this._postToWebview('addMessage', {
                 message: {
                     type: 'assistant',
-                    text: `Sorry, I encountered an error: ${error instanceof Error ? error.message : 'Unknown error'}. Please make sure the PyPilot server is running on localhost:8000.`,
+                    text: `⚠️ Error: ${error instanceof Error ? error.message : 'Unknown error'}. Is the backend running?`,
                     timestamp: new Date().toISOString()
                 }
             });
         } finally {
-            // Hide typing indicator
-            this._panel.webview.postMessage({
-                command: 'hideTypingIndicator'
-            });
+            this._postToWebview('hideTypingIndicator');
         }
+    }
+
+    private _postToWebview(command: string, data?: any) {
+        this._panel.webview.postMessage({ command, ...data });
     }
 
     private _getHtmlForWebview(webview: vscode.Webview, extensionUri: vscode.Uri) {
@@ -211,44 +189,44 @@ export class AssistantPanel {
     <title>PyPilot Assistant</title>
 </head>
 <body>
-    <div class="container">
-        <div class="header">
-            <div class="header-content">
-                <div class="header-title">
-                    <h2>🐍 PyPilot Assistant</h2>
-                    <p>Your Python coding companion</p>
-                    <div class="thread-info">
-                        <span class="thread-label">Thread:</span>
-                        <span id="threadId" class="thread-id">Loading...</span>
-                    </div>
-                </div>
-                <div class="header-actions">
-                    <button id="newChatBtn" class="new-chat-btn">
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M12 5v14M5 12h14"/>
-                        </svg>
-                        New Chat
-                    </button>
+    <div class="app-container">
+        <header class="app-header">
+            <div class="logo">
+                <span class="logo-icon">🐍</span>
+                <span class="logo-text">PyPilot</span>
+            </div>
+            <div class="header-actions">
+                <button id="newChatBtn" title="New Chat">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M12 5v14M5 12h14"/>
+                    </svg>
+                </button>
+            </div>
+        </header>
+        <main id="chat-area" class="chat-area">
+            <div id="messages" class="messages-container">
+                <div class="welcome-message">
+                    <h1>Ready to code?</h1>
+                    <p>Ask me to explain code, write functions, or fix bugs in your Python project.</p>
                 </div>
             </div>
-        </div>
-        
-        <div class="chat-container">
-            <div id="messages" class="messages"></div>
-            
+        </main>
+        <footer class="input-area">
             <div class="input-container">
-                <div class="input-wrapper">
-                    <textarea id="messageInput" placeholder="Ask me anything about Python coding..." rows="3"></textarea>
-                    <button id="sendButton">
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <div class="input-tools">
+                     <span id="threadId" class="status-badge">New Session</span>
+                </div>
+                <div class="textarea-wrapper">
+                    <textarea id="messageInput" placeholder="Message PyPilot..." rows="1"></textarea>
+                    <button id="sendButton" disabled>
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/>
                         </svg>
                     </button>
                 </div>
             </div>
-        </div>
+        </footer>
     </div>
-    
     <script src="${scriptUri}"></script>
 </body>
 </html>`;
@@ -259,9 +237,7 @@ export class AssistantPanel {
         this._panel.dispose();
         while (this._disposables.length) {
             const x = this._disposables.pop();
-            if (x) {
-                x.dispose();
-            }
+            if (x) x.dispose();
         }
     }
 }

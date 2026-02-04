@@ -1,24 +1,54 @@
-// The module 'vscode' contains the VS Code extensibility API
-// Import the module and reference it with the alias vscode in your code below
 import * as vscode from 'vscode';
 import { AssistantPanel } from './assistantPanel';
+import { DiffManager } from './diffManager';
+import { DiffCodeLensProvider } from './diffCodeLensProvider';
 
-// This method is called when your extension is activated
-// Your extension is activated the very first time the command is executed
+/**
+ * Extension entry point.
+ */
 export function activate(context: vscode.ExtensionContext) {
+	console.log('PyPilot extension is now active.');
 
-	// Use the console to output diagnostic information (console.log) and errors (console.error)
-	// This line of code will only be executed once when your extension is activated
-	console.log('Congratulations, your extension "pypilot" is now active!');
-
-	// Register commands
-	const disposable2 = vscode.commands.registerCommand('pypilot.openAssistant', () => {
+	// Register Commands
+	const openAssistant = vscode.commands.registerCommand('pypilot.openAssistant', () => {
 		AssistantPanel.createOrShow(context.extensionUri);
 	});
 
-	context.subscriptions.push(disposable2);
+	const acceptChange = vscode.commands.registerCommand('pypilot.acceptChange', async (id: string) => {
+		await DiffManager.getInstance().acceptChange(id);
+	});
+
+	const rejectChange = vscode.commands.registerCommand('pypilot.rejectChange', async (id: string) => {
+		await DiffManager.getInstance().rejectChange(id);
+	});
+
+	// Register Providers
+	const codeLensProvider = vscode.languages.registerCodeLensProvider(
+		{ scheme: 'file' },
+		new DiffCodeLensProvider()
+	);
+
+	// Persistence Listeners
+	const editorChangeDisposable = vscode.window.onDidChangeActiveTextEditor(editor => {
+		if (editor) {
+			DiffManager.getInstance().refreshVisibleDecorations();
+		}
+	});
+
+	const visibleEditorsChangeDisposable = vscode.window.onDidChangeVisibleTextEditors(() => {
+		DiffManager.getInstance().refreshVisibleDecorations();
+	});
+
+	context.subscriptions.push(
+		openAssistant,
+		acceptChange,
+		rejectChange,
+		codeLensProvider,
+		editorChangeDisposable,
+		visibleEditorsChangeDisposable
+	);
 }
 
-
-// This method is called when your extension is deactivated
-export function deactivate() {}
+export function deactivate() {
+	// Cleanup if needed
+}

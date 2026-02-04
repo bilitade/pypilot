@@ -1,19 +1,24 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as diff from 'diff';
+import { DiffManager, DiffHunk } from './diffManager';
 
 /**
- * Tool call interface matching backend format
+ * Standard tool call interface.
  */
 export interface ToolCall {
     id: string;
     type: 'function';
     function: {
         name: string;
-        arguments: string; // JSON string
+        arguments: string;
     };
 }
 
+/**
+ * Standard tool result format.
+ */
 export interface ToolResult {
     tool_call_id: string;
     output: string;
@@ -21,7 +26,7 @@ export interface ToolResult {
 }
 
 /**
- * Handles execution of tool calls from the backend agent
+ * Handles execution of tool calls received from the agent.
  */
 export class ToolExecutor {
     private workspaceRoot: string;
@@ -32,11 +37,11 @@ export class ToolExecutor {
     }
 
     /**
-     * Execute a batch of tool calls
+     * Executes a batch of tool calls and returns results.
      */
     async executeToolCalls(toolCalls: ToolCall[]): Promise<ToolResult[]> {
         const results: ToolResult[] = [];
-        
+
         for (const toolCall of toolCalls) {
             try {
                 const args = JSON.parse(toolCall.function.arguments);
@@ -71,11 +76,7 @@ export class ToolExecutor {
                         output = `Unknown tool: ${toolCall.function.name}`;
                 }
 
-                results.push({
-                    tool_call_id: toolCall.id,
-                    output: output,
-                    success: true
-                });
+                results.push({ tool_call_id: toolCall.id, output, success: true });
             } catch (error) {
                 results.push({
                     tool_call_id: toolCall.id,
@@ -88,235 +89,160 @@ export class ToolExecutor {
         return results;
     }
 
-    /**
-     * Read a file from the workspace
-     */
     private async readFile(filePath: string): Promise<string> {
         const fullPath = this.resolvePathInWorkspace(filePath);
-        
-        if (!fs.existsSync(fullPath)) {
-            throw new Error(`File not found: ${filePath}`);
+        const uri = vscode.Uri.file(fullPath);
+
+        const pending = DiffManager.getInstance().getChangeForFile(uri);
+        if (pending) {
+            return JSON.stringify({
+                path: filePath,
+                content: pending.proposedContent,
+                lines: pending.proposedContent.split('\n').length,
+                size: pending.proposedContent.length
+            });
         }
 
+        if (!fs.existsSync(fullPath)) throw new Error(`File not found: ${filePath}`);
         const content = fs.readFileSync(fullPath, 'utf-8');
-        const lines = content.split('\n');
-        
-        return JSON.stringify({
-            path: filePath,
-            content: content,
-            lines: lines.length,
-            size: content.length
-        });
+        return JSON.stringify({ path: filePath, content, lines: content.split('\n').length, size: content.length });
     }
 
-    /**
-     * Write content to a file (create or overwrite)
-     */
-    private async writeFile(filePath: string, content: string): Promise<string> {
+    private async writeFile(filePath: string, proposedContent: string): Promise<string> {
         const fullPath = this.resolvePathInWorkspace(filePath);
         const dir = path.dirname(fullPath);
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 
-        // Create directory if it doesn't exist
-        if (!fs.existsSync(dir)) {
-            fs.mkdirSync(dir, { recursive: true });
+        const uri = vscode.Uri.file(fullPath);
+        const pending = DiffManager.getInstance().getChangeForFile(uri);
+
+        const originalContent = pending ? pending.originalContent : (fs.existsSync(fullPath) ? fs.readFileSync(fullPath, 'utf-8') : '');
+        const { interleavedContent, hunks } = this.calculateInterleavedDiff(originalContent, proposedContent);
+
+        const edit = new vscode.WorkspaceEdit();
+        if (fs.existsSync(fullPath)) {
+            const document = await vscode.workspace.openTextDocument(uri);
+            const fullRange = new vscode.Range(new vscode.Position(0, 0), document.lineAt(document.lineCount - 1).range.end);
+            edit.replace(uri, fullRange, interleavedContent);
+        } else {
+            edit.createFile(uri, { overwrite: true, contents: Buffer.from(interleavedContent, 'utf-8') });
         }
 
-        // Check if file exists for approval
-        const fileExists = fs.existsSync(fullPath);
-        const action = fileExists ? 'overwrite' : 'create';
+        await vscode.workspace.applyEdit(edit);
+        const document = await vscode.workspace.openTextDocument(uri);
+        await vscode.window.showTextDocument(document, { preserveFocus: true, preview: false });
 
-        // Ask for user confirmation
-        const confirmation = await vscode.window.showInformationMessage(
-            `The agent wants to ${action} file: ${filePath}`,
-            { modal: true },
-            'Approve',
-            'Reject'
-        );
-
-        if (confirmation !== 'Approve') {
-            throw new Error('User rejected file write operation');
-        }
-
-        fs.writeFileSync(fullPath, content, 'utf-8');
-
-        // Open the file in the editor
-        const document = await vscode.workspace.openTextDocument(fullPath);
-        await vscode.window.showTextDocument(document);
-
-        return `Successfully ${action}d file: ${filePath} (${content.length} bytes)`;
+        await DiffManager.getInstance().proposeChange(fullPath, originalContent, proposedContent, interleavedContent, hunks);
+        return `Proposed change for: ${filePath}. Review Accept/Reject in editor.`;
     }
 
-    /**
-     * Edit a file by replacing old_text with new_text
-     */
     private async editFile(filePath: string, oldText: string, newText: string): Promise<string> {
         const fullPath = this.resolvePathInWorkspace(filePath);
+        if (!fs.existsSync(fullPath)) throw new Error(`File not found: ${filePath}`);
 
-        if (!fs.existsSync(fullPath)) {
-            throw new Error(`File not found: ${filePath}`);
+        const uri = vscode.Uri.file(fullPath);
+        const pending = DiffManager.getInstance().getChangeForFile(uri);
+
+        const originalContent = pending ? pending.originalContent : fs.readFileSync(fullPath, 'utf-8');
+        const currentIntendedContent = pending ? pending.proposedContent : originalContent;
+
+        if (!currentIntendedContent.includes(oldText)) {
+            throw new Error(`Could not find text to replace in ${filePath}. Note: The file has a pending change, you are editing the PROPOSED state.`);
         }
 
-        const content = fs.readFileSync(fullPath, 'utf-8');
+        const newProposedContent = currentIntendedContent.replace(oldText, newText);
+        const { interleavedContent, hunks } = this.calculateInterleavedDiff(originalContent, newProposedContent);
 
-        // Check if old_text exists
-        if (!content.includes(oldText)) {
-            throw new Error(`Could not find the text to replace in ${filePath}`);
-        }
+        const edit = new vscode.WorkspaceEdit();
+        const document = await vscode.workspace.openTextDocument(uri);
+        const fullRange = new vscode.Range(new vscode.Position(0, 0), document.lineAt(document.lineCount - 1).range.end);
+        edit.replace(uri, fullRange, interleavedContent);
+        await vscode.workspace.applyEdit(edit);
 
-        const newContent = content.replace(oldText, newText);
+        await vscode.window.showTextDocument(document, { preserveFocus: true, preview: false });
+        await DiffManager.getInstance().proposeChange(fullPath, originalContent, newProposedContent, interleavedContent, hunks);
 
-        // Show diff to user for approval
-        const approval = await this.showDiffAndAskApproval(filePath, content, newContent);
-
-        if (!approval) {
-            throw new Error('User rejected the edit');
-        }
-
-        fs.writeFileSync(fullPath, newContent, 'utf-8');
-
-        // Refresh the file in editor if open
-        const document = await vscode.workspace.openTextDocument(fullPath);
-        await vscode.window.showTextDocument(document);
-
-        return `Successfully edited file: ${filePath}`;
+        return `Proposed edit for: ${filePath}. Review Accept/Reject in editor.`;
     }
 
-    /**
-     * Show a diff preview and ask for approval
-     */
-    private async showDiffAndAskApproval(filePath: string, oldContent: string, newContent: string): Promise<boolean> {
-        // Create temporary files for diff
-        const tempDir = path.join(this.workspaceRoot, '.vscode', 'temp');
-        if (!fs.existsSync(tempDir)) {
-            fs.mkdirSync(tempDir, { recursive: true });
+    private calculateInterleavedDiff(oldContent: string, newContent: string): { interleavedContent: string, hunks: DiffHunk[] } {
+        const oldLines = oldContent.endsWith('\n') ? oldContent : oldContent + '\n';
+        const newLines = newContent.endsWith('\n') ? newContent : newContent + '\n';
+
+        const diffResults = diff.diffLines(oldLines, newLines);
+        let interleavedContent = '';
+        const hunks: DiffHunk[] = [];
+        let currentLine = 0;
+
+        for (const part of diffResults) {
+            const lines = part.value;
+            const lineCount = part.count || 0;
+
+            hunks.push({
+                type: part.added ? 'added' : (part.removed ? 'removed' : 'equal'),
+                startLine: currentLine,
+                lineCount
+            });
+            interleavedContent += lines;
+            currentLine += lineCount;
         }
 
-        const oldFile = path.join(tempDir, `old_${path.basename(filePath)}`);
-        const newFile = path.join(tempDir, `new_${path.basename(filePath)}`);
-
-        fs.writeFileSync(oldFile, oldContent);
-        fs.writeFileSync(newFile, newContent);
-
-        const oldUri = vscode.Uri.file(oldFile);
-        const newUri = vscode.Uri.file(newFile);
-
-        // Show diff
-        await vscode.commands.executeCommand('vscode.diff', oldUri, newUri, `Proposed Edit: ${path.basename(filePath)}`);
-
-        // Ask for approval
-        const result = await vscode.window.showInformationMessage(
-            `Apply this edit to ${filePath}?`,
-            { modal: true },
-            'Apply',
-            'Reject'
-        );
-
-        // Cleanup temp files
-        fs.unlinkSync(oldFile);
-        fs.unlinkSync(newFile);
-
-        return result === 'Apply';
+        return { interleavedContent, hunks };
     }
 
-    /**
-     * List files in a directory
-     */
     private async listDirectory(directoryPath: string): Promise<string> {
         const fullPath = this.resolvePathInWorkspace(directoryPath);
-
-        if (!fs.existsSync(fullPath)) {
-            throw new Error(`Directory not found: ${directoryPath}`);
-        }
-
+        if (!fs.existsSync(fullPath)) throw new Error(`Directory not found: ${directoryPath}`);
         const items = fs.readdirSync(fullPath, { withFileTypes: true });
-        const result = items.map(item => ({
-            name: item.name,
-            type: item.isDirectory() ? 'directory' : 'file',
-            path: path.join(directoryPath, item.name)
-        }));
-
+        const result = items.map(item => ({ name: item.name, type: item.isDirectory() ? 'directory' : 'file', path: path.join(directoryPath, item.name) }));
         return JSON.stringify({ directory: directoryPath, items: result });
     }
 
-    /**
-     * Create a directory
-     */
     private async createDirectory(directoryPath: string): Promise<string> {
         const fullPath = this.resolvePathInWorkspace(directoryPath);
-
-        if (fs.existsSync(fullPath)) {
-            return `Directory already exists: ${directoryPath}`;
-        }
-
-        fs.mkdirSync(fullPath, { recursive: true });
-        return `Successfully created directory: ${directoryPath}`;
+        if (!fs.existsSync(fullPath)) fs.mkdirSync(fullPath, { recursive: true });
+        return `Created directory: ${directoryPath}`;
     }
 
-    /**
-     * Delete a file
-     */
     private async deleteFile(filePath: string): Promise<string> {
         const fullPath = this.resolvePathInWorkspace(filePath);
+        if (!fs.existsSync(fullPath)) throw new Error(`File not found: ${filePath}`);
 
-        if (!fs.existsSync(fullPath)) {
-            throw new Error(`File not found: ${filePath}`);
-        }
+        const uri = vscode.Uri.file(fullPath);
+        const pending = DiffManager.getInstance().getChangeForFile(uri);
+        const originalContent = pending ? pending.originalContent : fs.readFileSync(fullPath, 'utf-8');
 
-        // Ask for confirmation
-        const confirmation = await vscode.window.showWarningMessage(
-            `The agent wants to delete: ${filePath}`,
-            { modal: true },
-            'Delete',
-            'Cancel'
-        );
+        const { interleavedContent, hunks } = this.calculateInterleavedDiff(originalContent, '');
 
-        if (confirmation !== 'Delete') {
-            throw new Error('User cancelled file deletion');
-        }
+        const document = await vscode.workspace.openTextDocument(uri);
+        const edit = new vscode.WorkspaceEdit();
+        const fullRange = new vscode.Range(new vscode.Position(0, 0), document.lineAt(document.lineCount - 1).range.end);
+        edit.replace(uri, fullRange, interleavedContent);
+        await vscode.workspace.applyEdit(edit);
 
-        fs.unlinkSync(fullPath);
-        return `Successfully deleted file: ${filePath}`;
+        await DiffManager.getInstance().proposeChange(fullPath, originalContent, '', interleavedContent, hunks);
+        return `Proposed deletion for: ${filePath}. Review Accept/Reject in editor.`;
     }
 
-    /**
-     * Get workspace information
-     */
     private async getWorkspaceInfo(): Promise<string> {
         const workspaceFolders = vscode.workspace.workspaceFolders;
         const activeEditor = vscode.window.activeTextEditor;
-
-        const info = {
+        return JSON.stringify({
             workspace_root: this.workspaceRoot,
             workspace_name: workspaceFolders?.[0]?.name || 'Unknown',
             active_file: activeEditor?.document.fileName || null,
             open_files: vscode.workspace.textDocuments.map(doc => doc.fileName),
             language: activeEditor?.document.languageId || null
-        };
-
-        return JSON.stringify(info);
+        });
     }
 
-    /**
-     * Search for files matching a pattern
-     */
     private async searchFiles(pattern: string): Promise<string> {
         const files = await vscode.workspace.findFiles(pattern, '**/node_modules/**', 100);
-        const relativePaths = files.map(file => 
-            path.relative(this.workspaceRoot, file.fsPath)
-        );
-
+        const relativePaths = files.map(file => path.relative(this.workspaceRoot, file.fsPath));
         return JSON.stringify({ pattern, files: relativePaths, count: relativePaths.length });
     }
 
-    /**
-     * Resolve a path relative to workspace root
-     */
     private resolvePathInWorkspace(filePath: string): string {
-        if (path.isAbsolute(filePath)) {
-            return filePath;
-        }
-        return path.join(this.workspaceRoot, filePath);
+        return path.isAbsolute(filePath) ? filePath : path.join(this.workspaceRoot, filePath);
     }
 }
-
-
