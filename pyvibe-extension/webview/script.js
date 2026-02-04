@@ -5,8 +5,19 @@
     const sendButton = document.getElementById('sendButton');
     const newChatBtn = document.getElementById('newChatBtn');
     const threadIdSpan = document.getElementById('threadId');
+    const modelSelector = document.getElementById('modelSelector');
 
     let currentThreadId = '';
+    let selectedModel = localStorage.getItem('selectedModel') || 'openai/gpt-4o';
+
+    // Initialize model selector
+    if (modelSelector) {
+        modelSelector.value = selectedModel;
+        modelSelector.addEventListener('change', () => {
+            selectedModel = modelSelector.value;
+            localStorage.setItem('selectedModel', selectedModel);
+        });
+    }
 
     // Icons
     const ICONS = {
@@ -83,7 +94,8 @@
         if (text) {
             vscode.postMessage({
                 command: 'sendMessage',
-                text: text
+                text: text,
+                model: selectedModel
             });
             messageInput.value = '';
             messageInput.style.height = 'auto';

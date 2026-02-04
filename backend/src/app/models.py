@@ -15,6 +15,7 @@ class ChatRequest(BaseModel):
     """Chat request model."""
     message: str
     thread_id: str = "default"
+    model: Optional[str] = None
     tool_results: Optional[List[Dict[str, Any]]] = None
 
 

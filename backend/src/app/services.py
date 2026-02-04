@@ -37,7 +37,8 @@ class ChatService:
             # Create thread config for LangGraph with checkpointer
             config = {
                 "configurable": {
-                    "thread_id": request.thread_id
+                    "thread_id": request.thread_id,
+                    "model": request.model
                 }
             }
             

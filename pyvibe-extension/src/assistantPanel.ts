@@ -32,7 +32,10 @@ export class AssistantPanel {
             {
                 enableScripts: true,
                 retainContextWhenHidden: true,
-                localResourceRoots: [vscode.Uri.joinPath(extensionUri, 'webview')]
+                localResourceRoots: [
+                    vscode.Uri.joinPath(extensionUri, 'webview'),
+                    vscode.Uri.joinPath(extensionUri, 'src', 'asset')
+                ]
             }
         );
 
@@ -51,7 +54,7 @@ export class AssistantPanel {
             message => {
                 switch (message.command) {
                     case 'sendMessage':
-                        this.handleUserMessage(message.text);
+                        this.handleUserMessage(message.text, undefined, message.model);
                         break;
                     case 'newChat':
                         this.startNewChat();
@@ -80,7 +83,7 @@ export class AssistantPanel {
         this._postToWebview('newChat', { threadId: this.currentThreadId });
     }
 
-    private async handleUserMessage(text: string, toolResults?: ToolResult[]) {
+    private async handleUserMessage(text: string, toolResults?: ToolResult[], selectedModel?: string) {
         if (!toolResults) {
             this._postToWebview('addMessage', {
                 message: {
@@ -94,7 +97,11 @@ export class AssistantPanel {
         this._postToWebview('showTypingIndicator');
 
         try {
-            const requestBody: any = { message: text, thread_id: this.currentThreadId };
+            const requestBody: any = {
+                message: text,
+                thread_id: this.currentThreadId,
+                model: selectedModel
+            };
             if (toolResults) requestBody.tool_results = toolResults;
 
             const response = await fetch('http://localhost:8000/chat', {
@@ -156,7 +163,7 @@ export class AssistantPanel {
 
                 this._postToWebview('updateStatus', { status: 'Complete', done: true });
                 // Recursively handle the next step in the turn
-                await this.handleUserMessage(text, currentResults);
+                await this.handleUserMessage(text, currentResults, selectedModel);
                 return;
             }
         } catch (error) {
@@ -179,6 +186,7 @@ export class AssistantPanel {
     private _getHtmlForWebview(webview: vscode.Webview, extensionUri: vscode.Uri) {
         const styleUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'webview', 'style.css'));
         const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'webview', 'script.js'));
+        const logoUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'src', 'asset', 'pypilot.png'));
 
         return `<!DOCTYPE html>
 <html lang="en">
@@ -192,8 +200,7 @@ export class AssistantPanel {
     <div class="app-container">
         <header class="app-header">
             <div class="logo">
-                <span class="logo-icon">🐍</span>
-                <span class="logo-text">PyPilot</span>
+                <img src="${logoUri}" alt="PyPilot Logo" class="logo-img">
             </div>
             <div class="header-actions">
                 <button id="newChatBtn" title="New Chat">
@@ -214,15 +221,36 @@ export class AssistantPanel {
         <footer class="input-area">
             <div class="input-container">
                 <div class="input-tools">
-                     <span id="threadId" class="status-badge">New Session</span>
+                    <span id="threadId" class="status-badge">New Session</span>
                 </div>
                 <div class="textarea-wrapper">
                     <textarea id="messageInput" placeholder="Message PyPilot..." rows="1"></textarea>
-                    <button id="sendButton" disabled>
-                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/>
-                        </svg>
-                    </button>
+                    <div class="input-actions">
+                        <div class="model-selector-container">
+                            <select id="modelSelector">
+                                <optgroup label="OpenAI">
+                                    <option value="openai/gpt-5-mini" selected>GPT-5 Mini</option>
+                                    <option value="openai/gpt-5">GPT-5</option>
+                                    <option value="openai/gpt-4o-mini">GPT-4o Mini</option>
+                                    <option value="openai/gpt-4">GPT-4</option>
+                                </optgroup>
+                                <optgroup label="Groq">
+                                    <option value="groq/openai/gpt-oss-20b">OSS GPT-120B</option>
+                                    <option value="groq/llama-3.3-70b-versatile">Llama 3.3 70B</option>
+                                </optgroup>
+                            </select>
+                            <div class="selector-arrow">
+                                <svg width="10" height="6" viewBox="0 0 10 6" fill="none" stroke="currentColor" stroke-width="1.5">
+                                    <path d="M1 1L5 5L9 1"/>
+                                </svg>
+                            </div>
+                        </div>
+                        <button id="sendButton" disabled>
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/>
+                            </svg>
+                        </button>
+                    </div>
                 </div>
             </div>
         </footer>
