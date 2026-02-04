@@ -1,10 +1,19 @@
 import * as vscode from 'vscode';
+import { ToolExecutor, ToolCall, ToolResult } from './toolExecutor';
+
+interface ApiResponse {
+    response: string;
+    thread_id: string;
+    tool_calls?: ToolCall[];
+    metadata?: any;
+}
 
 export class AssistantPanel {
     public static currentPanel: AssistantPanel | undefined;
     private readonly _panel: vscode.WebviewPanel;
     private _disposables: vscode.Disposable[] = [];
     private currentThreadId: string;
+    private toolExecutor: ToolExecutor;
 
     public static createOrShow(extensionUri: vscode.Uri) {
         const column = vscode.window.activeTextEditor
@@ -17,8 +26,8 @@ export class AssistantPanel {
         }
 
         const panel = vscode.window.createWebviewPanel(
-            'pyvibeAssistant',
-            'PyVibe Assistant',
+            'pypilotAssistant',
+            'PyPilot Assistant',
             column || vscode.ViewColumn.One,
             {
                 enableScripts: true,
@@ -33,6 +42,7 @@ export class AssistantPanel {
     private constructor(panel: vscode.WebviewPanel, extensionUri: vscode.Uri) {
         this._panel = panel;
         this.currentThreadId = this.generateThreadId();
+        this.toolExecutor = new ToolExecutor();
         this._panel.webview.html = this._getHtmlForWebview(this._panel.webview, extensionUri);
 
         this._panel.onDidDispose(() => this.dispose(), null, this._disposables);
@@ -57,6 +67,14 @@ export class AssistantPanel {
             null,
             this._disposables
         );
+
+        // Send initial thread ID to webview
+        setTimeout(() => {
+            this._panel.webview.postMessage({
+                command: 'threadId',
+                threadId: this.currentThreadId
+            });
+        }, 100);
     }
 
     private generateThreadId(): string {
@@ -71,16 +89,18 @@ export class AssistantPanel {
         });
     }
 
-    private async handleUserMessage(text: string) {
-        // Add user message to chat
-        this._panel.webview.postMessage({
-            command: 'addMessage',
-            message: {
-                type: 'user',
-                text: text,
-                timestamp: new Date().toISOString()
-            }
-        });
+    private async handleUserMessage(text: string, toolResults?: ToolResult[]) {
+        // Only add user message if this is a new message (not a tool result continuation)
+        if (!toolResults) {
+            this._panel.webview.postMessage({
+                command: 'addMessage',
+                message: {
+                    type: 'user',
+                    text: text,
+                    timestamp: new Date().toISOString()
+                }
+            });
+        }
 
         // Show typing indicator
         this._panel.webview.postMessage({
@@ -89,42 +109,84 @@ export class AssistantPanel {
 
         try {
             // Call the API endpoint
+            const requestBody: any = {
+                message: text,
+                thread_id: this.currentThreadId
+            };
+
+            // Include tool results if this is a continuation
+            if (toolResults) {
+                requestBody.tool_results = toolResults;
+            }
+
             const response = await fetch('http://localhost:8000/chat', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                 },
-                body: JSON.stringify({
-                    message: text,
-                    thread_id: this.currentThreadId
-                })
+                body: JSON.stringify(requestBody)
             });
 
             if (!response.ok) {
                 throw new Error(`HTTP error! status: ${response.status}`);
             }
 
-            const data = await response.json() as { response: string; thread_id: string; metadata?: any };
+            const data = await response.json() as ApiResponse;
 
-            // Add assistant response to chat
-            this._panel.webview.postMessage({
-                command: 'addMessage',
-                message: {
-                    type: 'assistant',
-                    text: data.response,
-                    timestamp: new Date().toISOString()
-                }
-            });
+            // Check if there are tool calls to execute
+            if (data.tool_calls && data.tool_calls.length > 0) {
+                // Show a status message
+                this._panel.webview.postMessage({
+                    command: 'addMessage',
+                    message: {
+                        type: 'system',
+                        text: `🔧 Executing ${data.tool_calls.length} action(s)...`,
+                        timestamp: new Date().toISOString()
+                    }
+                });
+
+                // Execute the tool calls
+                const toolResults = await this.toolExecutor.executeToolCalls(data.tool_calls);
+
+                // Display tool execution results
+                const successCount = toolResults.filter(r => r.success).length;
+                const statusText = `✅ Completed ${successCount}/${toolResults.length} action(s)`;
+
+                this._panel.webview.postMessage({
+                    command: 'addMessage',
+                    message: {
+                        type: 'system',
+                        text: statusText,
+                        timestamp: new Date().toISOString()
+                    }
+                });
+
+                // Continue the conversation with tool results
+                await this.handleUserMessage(text, toolResults);
+                return;
+            }
+
+            // Add assistant response to chat (only if no tool calls)
+            if (data.response) {
+                this._panel.webview.postMessage({
+                    command: 'addMessage',
+                    message: {
+                        type: 'assistant',
+                        text: data.response,
+                        timestamp: new Date().toISOString()
+                    }
+                });
+            }
 
         } catch (error) {
             console.error('Error calling API:', error);
-            
+
             // Add error message to chat
             this._panel.webview.postMessage({
                 command: 'addMessage',
                 message: {
                     type: 'assistant',
-                    text: `Sorry, I encountered an error: ${error instanceof Error ? error.message : 'Unknown error'}. Please make sure the PyVibe server is running on localhost:8000.`,
+                    text: `Sorry, I encountered an error: ${error instanceof Error ? error.message : 'Unknown error'}. Please make sure the PyPilot server is running on localhost:8000.`,
                     timestamp: new Date().toISOString()
                 }
             });
@@ -146,15 +208,19 @@ export class AssistantPanel {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <link href="${styleUri}" rel="stylesheet">
-    <title>PyVibe Assistant</title>
+    <title>PyPilot Assistant</title>
 </head>
 <body>
     <div class="container">
         <div class="header">
             <div class="header-content">
                 <div class="header-title">
-                    <h2>🐍 PyVibe Assistant</h2>
+                    <h2>🐍 PyPilot Assistant</h2>
                     <p>Your Python coding companion</p>
+                    <div class="thread-info">
+                        <span class="thread-label">Thread:</span>
+                        <span id="threadId" class="thread-id">Loading...</span>
+                    </div>
                 </div>
                 <div class="header-actions">
                     <button id="newChatBtn" class="new-chat-btn">
