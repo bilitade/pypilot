@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Simple script to start the PyVibe server
+Simple script to start the PyPilot server
 """
 import os
 import sys
@@ -22,7 +22,7 @@ def main():
         sys.exit(1)
     
     # Start the server using uv run
-    print("🚀 Starting PyVibe server on http://localhost:8000")
+    print("🚀 Starting PyPilot server on http://localhost:8000")
     print("📝 API Documentation: http://localhost:8000/docs")
     print("🛑 Press Ctrl+C to stop the server")
     print("-" * 50)
