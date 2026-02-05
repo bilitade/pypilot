@@ -30,6 +30,8 @@ src/
 ## Setup
 
 ```bash
+cd backend
+
 # Install dependencies
 uv sync
 
