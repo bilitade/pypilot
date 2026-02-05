@@ -48,13 +48,13 @@ pyvibe-extension/node_modules/
 vscode-extension/dist/
 vscode-extension/out/
 vscode-extension/*.vsix
-pyvibe-extension/dist/
-pyvibe-extension/out/
-pyvibe-extension/*.vsix
+vscode-extension/dist/
+vscode-extension/out/
+vscode-extension/*.vsix
 
 # VS Code testing
 vscode-extension/.vscode-test/
-pyvibe-extension/.vscode-test/
+vscode-extension/.vscode-test/
 
 # =================================
 # IDE files

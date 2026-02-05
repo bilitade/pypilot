@@ -42,7 +42,8 @@ export class AssistantPanel {
                 retainContextWhenHidden: true,
                 localResourceRoots: [
                     vscode.Uri.joinPath(extensionUri, 'webview'),
-                    vscode.Uri.joinPath(extensionUri, 'src', 'asset')
+                    vscode.Uri.joinPath(extensionUri, 'src', 'asset'),
+                    vscode.Uri.joinPath(extensionUri, 'node_modules')
                 ]
             }
         );
@@ -226,12 +227,24 @@ export class AssistantPanel {
         const styleUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'webview', 'style.css'));
         const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'webview', 'script.js'));
         const logoUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'src', 'asset', 'pypilot.png'));
+        
+        // Load marked.js and highlight.js from node_modules
+        const markedUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'node_modules', 'marked', 'marked.min.js'));
+        const highlightJsUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'node_modules', 'highlight.js', 'lib', 'core.js'));
+        const highlightCssUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'node_modules', 'highlight.js', 'styles', 'github-dark.css'));
+        
+        // Individual language modules for highlight.js
+        const hljsLangs = ['python', 'javascript', 'typescript', 'bash', 'json', 'markdown', 'yaml', 'sql', 'css', 'html', 'xml'];
+        const langScripts = hljsLangs.map(lang => 
+            `<script src="${webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'node_modules', 'highlight.js', 'lib', 'languages', `${lang}.js`))}"></script>`
+        ).join('\n    ');
 
         return `<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link href="${highlightCssUri}" rel="stylesheet">
     <link href="${styleUri}" rel="stylesheet">
     <title>PyPilot Assistant</title>
 </head>
@@ -294,6 +307,10 @@ export class AssistantPanel {
             </div>
         </footer>
     </div>
+    <!-- Load markdown parser and syntax highlighter -->
+    <script src="${markedUri}"></script>
+    <script src="${highlightJsUri}"></script>
+    ${langScripts}
     <script src="${scriptUri}"></script>
 </body>
 </html>`;

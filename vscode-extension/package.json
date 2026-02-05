@@ -63,6 +63,8 @@
     "webpack-cli": "^6.0.1"
   },
   "dependencies": {
-    "diff": "^8.0.3"
+    "diff": "^8.0.3",
+    "highlight.js": "^11.11.1",
+    "marked": "^17.0.1"
   }
 }

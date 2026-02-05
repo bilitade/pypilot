@@ -4,6 +4,22 @@
  */
 (function () {
     const vscode = acquireVsCodeApi();
+    
+    // Initialize marked with options
+    if (typeof marked !== 'undefined') {
+        marked.setOptions({
+            highlight: function(code, lang) {
+                if (lang && hljs.getLanguage(lang)) {
+                    try {
+                        return hljs.highlight(code, { language: lang }).value;
+                    } catch (err) {}
+                }
+                return hljs.highlightAuto(code).value;
+            },
+            breaks: true,
+            gfm: true
+        });
+    }
 
     // UI Elements
     const messagesContainer = document.getElementById('messages');
@@ -153,15 +169,50 @@
     }
 
     /**
-     * Basic Markdown-like formatting for message text.
+     * Enhanced Markdown rendering with syntax highlighting.
      */
     function formatContent(text) {
         if (!text) return '';
+        
+        // Use marked.js for markdown parsing if available
+        if (typeof marked !== 'undefined') {
+            try {
+                return marked.parse(text);
+            } catch (err) {
+                console.error('Markdown parsing error:', err);
+                return escapeHtml(text).replace(/\n/g, '<br>');
+            }
+        }
+        
+        // Fallback to basic formatting
+        return basicMarkdownFormat(text);
+    }
+
+    /**
+     * Fallback basic markdown formatting
+     */
+    function basicMarkdownFormat(text) {
+        return escapeHtml(text)
+            .replace(/```(\w+)?\n([\s\S]+?)```/g, function(match, lang, code) {
+                const language = lang ? ` class="language-${lang}"` : '';
+                return `<pre><code${language}>${code.trim()}</code></pre>`;
+            })
+            .replace(/`([^`]+)`/g, '<code>$1</code>')
+            .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+            .replace(/\*(.+?)\*/g, '<em>$1</em>')
+            .replace(/\n/g, '<br>');
+    }
+
+    /**
+     * Escape HTML special characters
+     */
+    function escapeHtml(text) {
         return text
-            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') // Escape HTML
-            .replace(/```([\s\S]+?)```/g, '<pre><code>$1</code></pre>') // Code blocks
-            .replace(/`([^`]+)`/g, '<code>$1</code>') // Inline code
-            .replace(/\n/g, '<br>'); // Newlines
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
     }
 
     /**
