@@ -1,8 +1,6 @@
 """API business logic services."""
 
-import asyncio
 import json
-import os
 from typing import Dict, List, Any
 
 from fastapi import HTTPException
@@ -13,7 +11,7 @@ from app.models import ChatRequest, ChatResponse, ToolCall
 
 
 class ChatService:
-    """Service for handling chat operations."""
+    """Service for handling chat operations through the LangGraph agent."""
     
     @staticmethod
     async def process_chat_request(request: ChatRequest) -> ChatResponse:
@@ -29,12 +27,7 @@ class ChatService:
             HTTPException: If request processing fails
         """
         try:
-            print(f"\n=== Chat Request ===")
-            print(f"Thread ID: {request.thread_id}")
-            print(f"Message: {request.message[:100]}...")
-            print(f"Tool results: {len(request.tool_results) if request.tool_results else 0}")
-            
-            # Create thread config for LangGraph with checkpointer
+            # Create thread config for LangGraph with checkpointer support
             config = {
                 "configurable": {
                     "thread_id": request.thread_id,
@@ -42,19 +35,14 @@ class ChatService:
                 }
             }
             
-            # Prepare input messages
+            # Prepare state transition based on whether this is a new message or tool results
             input_data = ChatService._prepare_input_data(request)
             
-            # Invoke the agent
-            print(f"Invoking agent with config: {config}")
+            # Invoke the agent graph
             result = await agentGraph.ainvoke(input_data, config=config)
             
-            # Extract response
+            # Extract response text and pending tool calls from the updated state
             response_text, tool_calls = ChatService._extract_response(result)
-            
-            print(f"Response: {response_text[:100]}...")
-            print(f"Tool calls: {len(tool_calls) if tool_calls else 0}")
-            print("=== End Request ===\n")
             
             return ChatResponse(
                 response=response_text,
@@ -64,12 +52,9 @@ class ChatService:
             )
             
         except Exception as e:
-            print(f"Error processing chat request: {e}")
-            import traceback
-            traceback.print_exc()
             raise HTTPException(
                 status_code=500,
-                detail=f"Error processing request: {str(e)}"
+                detail=f"Internal agent error: {str(e)}"
             )
     
     @staticmethod
@@ -80,13 +65,13 @@ class ChatService:
             request: Chat request
             
         Returns:
-            Input data dictionary
+            Input data dictionary formatted for the graph
         """
         if not request.tool_results:
-            # New message from user
+            # Initial user prompt
             return {"messages": [{"role": "user", "content": request.message}]}
         else:
-            # Tool results - need to add ToolMessages to the state
+            # Continuing a turn with execution results from the extension host
             tool_messages = []
             for result in request.tool_results:
                 tool_messages.append(ToolMessage(
@@ -94,46 +79,35 @@ class ChatService:
                     tool_call_id=result.get("tool_call_id", "")
                 ))
             
-            # Add tool messages to continue the conversation
             return {"messages": tool_messages}
     
     @staticmethod
     def _extract_response(result: Dict[str, Any]) -> tuple[str, List[ToolCall] | None]:
-        """Extract response text and tool calls from agent result.
+        """Extract readability content and tool metadata from high-level graph state.
         
         Args:
-            result: Agent invocation result
+            result: Agent invocation output state
             
         Returns:
-            Tuple of (response_text, tool_calls)
+            Tuple of (response_text, list_of_tool_calls)
         """
         if not result or "messages" not in result or not result["messages"]:
-            return "I'm sorry, I couldn't process your request.", None
+            return "Assistant state is unclear.", None
         
         last_message = result["messages"][-1]
-        print(f"Last message type: {type(last_message).__name__}")
-        print(f"Last message dir: {[attr for attr in dir(last_message) if not attr.startswith('_')]}")
         
-        # Extract text content
+        # Extract text content if available
         response_text = ""
         if hasattr(last_message, 'content'):
             response_text = last_message.content
         else:
             response_text = str(last_message)
         
-        # Debugging: Print full message attributes
-        if hasattr(last_message, 'tool_calls'):
-            print(f"Has tool_calls attribute: {last_message.tool_calls}")
-        if hasattr(last_message, 'additional_kwargs'):
-            print(f"Additional kwargs: {last_message.additional_kwargs}")
-        
-        # Extract tool calls if present
+        # Extract structured tool calls
         tool_calls = None
         if hasattr(last_message, 'tool_calls') and last_message.tool_calls:
             tool_calls = []
-            print(f"Found {len(last_message.tool_calls)} tool calls!")
             for tc in last_message.tool_calls:
-                print(f"Tool call: {tc.get('name', '')} with args: {tc.get('args', {})}")
                 tool_calls.append(ToolCall(
                     id=tc.get("id", ""),
                     type="function",
@@ -147,28 +121,20 @@ class ChatService:
 
 
 class HealthService:
-    """Service for health check operations."""
+    """Service for health check monitoring."""
     
     @staticmethod
     def get_health_status() -> Dict[str, str]:
-        """Get service health status.
-        
-        Returns:
-            Health status dictionary
-        """
+        """Get service health status."""
         return {"status": "healthy", "service": "PyPilot Agent API"}
 
 
 class RootService:
-    """Service for root endpoint operations."""
+    """Service for discovery and root-level metadata."""
     
     @staticmethod
     def get_api_info() -> Dict[str, Any]:
-        """Get API information and endpoints.
-        
-        Returns:
-            API information dictionary
-        """
+        """Get API information and available endpoints."""
         return {
             "message": "PyPilot Agent API is running",
             "version": "1.0.0",

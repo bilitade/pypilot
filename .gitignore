@@ -41,14 +41,19 @@ backend/.langgraph_api
 # =================================
 
 # Node.js
+vscode-extension/node_modules/
 pyvibe-extension/node_modules/
 
 # Build outputs
+vscode-extension/dist/
+vscode-extension/out/
+vscode-extension/*.vsix
 pyvibe-extension/dist/
 pyvibe-extension/out/
 pyvibe-extension/*.vsix
 
 # VS Code testing
+vscode-extension/.vscode-test/
 pyvibe-extension/.vscode-test/
 
 # =================================
