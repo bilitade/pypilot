@@ -26,9 +26,17 @@ webview/
 6. File changes show as diffs → user accepts/rejects
 
 ## Setup
+```bash
+cd vscode-extension
+```
 
 ```bash
 npm install
+```
+### Compile Extension
+
+```bash
+npm run compile
 ```
 
 Press **F5** in VS Code → launches Extension Development Host
